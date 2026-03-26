@@ -1,0 +1,400 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  AUDITOR
+}
+
+enum CteStatus {
+  PENDENTE
+  CONFERIDO
+  DISCREPANCIA
+  CORRETO
+  LIBERADO
+}
+
+enum AuditStatus {
+  PENDENTE
+  APROVADO
+  REPROVADO
+  LIBERADO
+}
+
+enum TaxCalculationType {
+  PERCENTUAL
+  FIXO
+}
+
+enum FreightTableType {
+  UNICA
+  POR_PESO
+  POR_VALOR
+}
+
+enum TaxType {
+  TDE
+  TDA
+  TRT
+  TRF
+  TDC
+  EMEX
+}
+
+enum ExceptionType {
+  TDE
+  TDA
+  TRT
+  TRF
+  TDC
+  EMEX
+}
+
+enum ReferenceType {
+  CEP
+  CNPJ
+  CIDADE
+}
+
+enum ImportJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ============================================
+// TENANT - Empresas
+// ============================================
+
+model Tenant {
+  id            String    @id @default(uuid())
+  name          String    @db.VarChar(255)
+  cnpjRoot      String    @map("cnpj_root") @db.VarChar(8)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  users         User[]
+  freightTables FreightTable[]
+  ctes          Cte[]
+  auditConfigs  AuditConfig[]
+  importJobs    ImportJob[]
+
+  @@map("tenants")
+}
+
+// ============================================
+// USER - Usuários
+// ============================================
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  name         String   @db.VarChar(255)
+  email        String   @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         UserRole @default(AUDITOR)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  cteAudits     CteAudit[]
+  auditConfigs   AuditConfig[]
+  importJobs     ImportJob[]
+
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+// ============================================
+// CTE - Conhecimento de Transporte Eletrônico
+// ============================================
+
+model Cte {
+  id                    String     @id @default(uuid())
+  tenantId              String     @map("tenant_id")
+  chaveAcesso           String     @unique @map("chave_acesso") @db.VarChar(44)
+  xmlOriginal           String     @db.Text @map("xml_original")
+  
+  // Valores do CT-e
+  valorTotalServico     Decimal    @db.Decimal(15, 2) @map("valor_total_servico")
+  valorFretePeso        Decimal    @db.Decimal(15, 2) @map("valor_frete_peso")
+  valorReceber          Decimal    @db.Decimal(15, 2) @map("valor_receber")
+  componentesDetalhes   Json       @map("componentes_detalhados")
+  
+  // Dados do CT-e
+  dataEmissao           DateTime   @map("data_emissao") @db.Timestamptz
+  dataProgramada        DateTime?  @map("data_programada") @db.Date
+  valorMercadoria       Decimal    @db.Decimal(15, 2) @map("valor_mercadoria")
+  pesoReal              Decimal    @db.Decimal(15, 4) @map("peso_real")
+  
+  // Emitente
+  emitenteCnpj          String     @map("emitente_cnpj") @db.VarChar(14)
+  emitenteNome          String     @map("emitente_nome") @db.VarChar(255)
+  
+  // Tomador
+  tomadorCnpj           String?    @map("tomador_cnpj") @db.VarChar(14)
+  tomadorNome           String?    @map("tomador_nome") @db.VarChar(255)
+  tomadorCidade         String?    @map("tomador_cidade") @db.VarChar(255)
+  tomadorUf             String?    @map("tomador_uf") @db.VarChar(2)
+  tomadorCep            String?    @map("tomador_cep") @db.VarChar(9)
+  
+  // Status e Auditoria
+  status                CteStatus  @default(PENDENTE)
+  auditId               String?    @unique @map("audit_id")
+  
+  // Dados calculados
+  valorAuditado         Decimal?   @map("valor_auditado") @db.Decimal(15, 2)
+  diferencaValor        Decimal?   @map("diferenca_valor") @db.Decimal(15, 2)
+  diferencaPercent      Decimal?   @map("diferenca_percent") @db.Decimal(5, 2)
+  
+  createdAt             DateTime   @default(now()) @map("created_at")
+
+  tenant                Tenant     @relation(fields: [tenantId], references: [id])
+  audit                 CteAudit?
+  taxItems              CteTaxItem[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([dataEmissao])
+  @@map("ctes")
+}
+
+// ============================================
+// CTE_TAX_ITEMS - Itens de Taxa Normalizados
+// ============================================
+
+model CteTaxItem {
+  id            String           @id @default(uuid())
+  cteId         String           @map("cte_id")
+  taxaNome      String           @map("taxa_nome") @db.VarChar(50)
+  valor         Decimal          @db.Decimal(15, 2)
+  tipoCalculo   TaxCalculationType @map("tipo_calculo")
+  baseCalculo   String?          @map("base_calculo") @db.VarChar(20)
+  descricao     String?          @db.VarChar(255)
+
+  cte           Cte              @relation(fields: [cteId], references: [id], onDelete: Cascade)
+
+  @@index([cteId])
+  @@map("cte_tax_items")
+}
+
+// ============================================
+// CTE_AUDIT - Auditorias
+// ============================================
+
+model CteAudit {
+  id                 String       @id @default(uuid())
+  cteId              String       @unique @map("cte_id")
+  auditorId          String       @map("auditor_id")
+  
+  // Valores auditados
+  valorApurado       Decimal      @db.Decimal(15, 2) @map("valor_apurado")
+  diferencaValor    Decimal?     @db.Decimal(15, 2) @map("diferenca_valor")
+  diferencaPercent  Decimal?     @db.Decimal(5, 2) @map("diferenca_percent")
+  
+  // Status e justificativa
+  status             AuditStatus  @default(PENDENTE)
+  justificativa      String?      @db.Text
+  toleranciaUsada    Boolean      @default(false) @map("tolerancia_usada")
+  
+  createdAt         DateTime     @default(now()) @map("created_at")
+
+  cte                Cte          @relation(fields: [cteId], references: [id])
+  auditor            User         @relation(fields: [auditorId], references: [id])
+
+  @@map("cte_audits")
+}
+
+// ============================================
+// FREIGHT_TABLE - Tabelas de Frete
+// ============================================
+
+model FreightTable {
+  id                        String           @id @default(uuid())
+  tenantId                  String           @map("tenant_id")
+  name                      String           @db.VarChar(255)
+  transportadoraNome        String           @map("transportadora_nome") @db.VarChar(255)
+  transportadoraCnpjRoot    String           @map("transportadora_cnpj_root") @db.VarChar(8)
+  
+  // Versionamento
+  versao                    Int              @default(1)
+  dataInicio                DateTime         @map("data_inicio") @db.Date
+  dataFim                   DateTime?        @map("data_fim") @db.Date
+  
+  ativa                     Boolean          @default(true)
+  tipoTabela               FreightTableType @default(UNICA) @map("tipo_tabela")
+  
+  // Configurações de taxas
+  adValorem                 Decimal?         @map("ad_valorem") @db.Decimal(5, 2)
+  gris                      Decimal?         @map("gris") @db.Decimal(5, 2)
+  grisMinimo                Decimal?         @map("gris_minimo") @db.Decimal(15, 2)
+  pedagioPorFracao         Decimal?         @map("pedagio_por_fracao") @db.Decimal(15, 2)
+  pedagioPesoBase          Int?             @default(100) @map("pedagio_peso_base")
+  
+  // Taxas administrativas
+  taxaDespacho              Decimal?         @map("taxa_despacho") @db.Decimal(15, 2)
+  taxaSefaz                 Decimal?         @map("taxa_sefaz") @db.Decimal(15, 2)
+  taxaEmergencial           Decimal?         @map("taxa_emergencial") @db.Decimal(5, 2)
+  taxaEmergencialTipo       TaxCalculationType? @default(PERCENTUAL) @map("taxa_emergencial_tipo")
+  
+  // Taxas de alto impacto
+  taxaReentrega             Decimal?         @map("taxa_reentrega") @db.Decimal(5, 2)
+  taxaDevolucao             Decimal?         @map("taxa_devolucao") @db.Decimal(5, 2)
+  taxaCubagemExcedenteTipo  TaxCalculationType? @default(FIXO) @map("taxa_cubagem_excedente_tipo")
+  taxaTevd                  Decimal?         @map("taxa_tevd") @db.Decimal(15, 2)
+  taxaRdc                   Decimal?         @map("taxa_rdc") @db.Decimal(15, 2)
+  
+  // Taxas operacionais
+  taxaEstadia               Decimal?         @map("taxa_estadia") @db.Decimal(15, 2)
+  taxaArmazenagem           Decimal?         @map("taxa_armazenagem") @db.Decimal(15, 2)
+  taxaAndares               Decimal?         @map("taxa_andares") @db.Decimal(15, 2)
+  taxaNoturna               Decimal?         @map("taxa_noturna") @db.Decimal(15, 2)
+  taxaComprovante           Decimal?         @map("taxa_comprovante") @db.Decimal(15, 2)
+  taxaProcessoIndenizatorio Decimal?         @map("taxa_processo_indenizatorio") @db.Decimal(15, 2)
+  
+  // Impostos
+  aliquotaIcms              Decimal?         @map("aliquota_icms") @db.Decimal(5, 2)
+  
+  // Configurações adicionais
+  fatorCubagem              Int?             @default(300) @map("fator_cubagem")
+  minima                    Decimal?         @map("minima") @db.Decimal(15, 2)
+  
+  createdAt                 DateTime         @default(now()) @map("created_at")
+
+  tenant                    Tenant           @relation(fields: [tenantId], references: [id])
+  pricing                   FreightTablePricing[]
+  regions                   FreightTableRegion[]
+  exceptions                FreightTableException[]
+
+  @@index([tenantId])
+  @@index([tenantId, transportadoraCnpjRoot, ativa])
+  @@map("freight_tables")
+}
+
+// ============================================
+// FREIGHT_TABLE_PRICING - Preços Frete Peso
+// ============================================
+
+model FreightTablePricing {
+  id              String        @id @default(uuid())
+  freightTableId  String        @map("freight_table_id")
+  ateKg           Decimal       @map("ate_kg") @db.Decimal(15, 2)
+  valor           Decimal       @db.Decimal(15, 2)
+  regiao          String        @default("PADRAO") @db.VarChar(100)
+
+  freightTable    FreightTable  @relation(fields: [freightTableId], references: [id], onDelete: Cascade)
+
+  @@index([freightTableId])
+  @@map("freight_table_pricing")
+}
+
+// ============================================
+// FREIGHT_TABLE_REGION - Regiões de Prazo
+// ============================================
+
+model FreightTableRegion {
+  id              String        @id @default(uuid())
+  freightTableId  String        @map("freight_table_id")
+  regiao          String        @db.VarChar(100)
+  cepDe           String        @map("cep_de") @db.VarChar(9)
+  cepAte          String        @map("cep_ate") @db.VarChar(9)
+  prazoDias       Int           @map("prazo_dias")
+
+  freightTable    FreightTable  @relation(fields: [freightTableId], references: [id], onDelete: Cascade)
+
+  @@index([freightTableId])
+  @@map("freight_table_regions")
+}
+
+// ============================================
+// FREIGHT_TABLE_EXCEPTION - Exceções Regionais
+// ============================================
+
+model FreightTableException {
+  id              String         @id @default(uuid())
+  freightTableId   String         @map("freight_table_id")
+  tipoExcecao     ExceptionType  @map("tipo_excecao")
+  tipoCadastro    ReferenceType  @map("tipo_cadastro")
+  
+  // Referência
+  referenciaInicio String?       @map("referencia_inicio") @db.VarChar(9)
+  referenciaFim    String?       @map("referencia_fim") @db.VarChar(9)
+  cidade          String?         @db.VarChar(255)
+  uf              String?         @db.VarChar(2)
+  regiao          String?         @db.VarChar(100)
+  
+  // Valores
+  valor           Decimal?        @db.Decimal(15, 2)
+  percentual      Decimal?        @db.Decimal(5, 2)
+  valorMinimo     Decimal?       @map("valor_minimo") @db.Decimal(15, 2)
+  
+  descricao       String?         @db.VarChar(255)
+
+  freightTable     FreightTable   @relation(fields: [freightTableId], references: [id], onDelete: Cascade)
+
+  @@index([freightTableId])
+  @@index([freightTableId, tipoExcecao])
+  @@map("freight_table_exceptions")
+}
+
+// ============================================
+// AUDIT_CONFIG - Configurações de Auditoria
+// ============================================
+
+model AuditConfig {
+  id                    String   @id @default(uuid())
+  tenantId              String   @map("tenant_id")
+  userId                String   @map("user_id")
+  
+  toleranciaPercent     Decimal? @map("tolerancia_percent") @db.Decimal(5, 2)
+  toleranciaFixo        Decimal? @map("tolerancia_fixo") @db.Decimal(15, 2)
+  valorLimiteAuditoria  Decimal? @map("valor_limite_auditoria") @db.Decimal(15, 2)
+  podeAprovarDiscrepancia Boolean @default(false) @map("pode_aprovar_discrepancia")
+  
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  tenant                Tenant   @relation(fields: [tenantId], references: [id])
+  user                  User     @relation(fields: [userId], references: [id])
+
+  @@unique([tenantId, userId])
+  @@map("audit_configs")
+}
+
+// ============================================
+// IMPORT_JOB - Jobs de Importação
+// ============================================
+
+model ImportJob {
+  id              String           @id @default(uuid())
+  tenantId        String           @map("tenant_id")
+  userId          String           @map("user_id")
+  
+  status          ImportJobStatus  @default(PENDING)
+  totalFiles      Int              @default(0) @map("total_files")
+  processedFiles  Int              @default(0) @map("processed_files")
+  failedFiles     Int              @default(0) @map("failed_files")
+  
+  jobId           String?          @unique @map("job_id")
+  errorMessage    String?          @map("error_message") @db.Text
+  
+  createdAt       DateTime         @default(now()) @map("created_at")
+  completedAt     DateTime?        @map("completed_at")
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  user            User             @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([status])
+  @@map("import_jobs")
+}
